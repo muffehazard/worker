@@ -9,57 +9,92 @@ type Job struct {
 	Description string
 	Job         func() error
 	Timeout     time.Duration
+	HardTimer   bool
 }
 
-func (j Job) Do(doneChan chan struct{}) error {
+func (j Job) Time(dc chan struct{}) {
 	if j.Timeout > 0 {
-		go func() {
-			start := time.Now()
-			ticker := time.NewTicker(j.Timeout)
-			defer ticker.Stop()
-			for {
-				select {
-				case c := <-ticker.C:
-					log.Printf("Job %v timeout, running time %v", j.Description, c.Sub(start))
-				case <-doneChan:
-					return
+		start := time.Now()
+		ticker := time.NewTicker(j.Timeout)
+		defer ticker.Stop()
+		for {
+			select {
+			case c := <-ticker.C:
+				if j.HardTimer {
+					log.Fatalf("Job %v hard timeout", j.Description)
 				}
+				log.Printf("Job %v timeout, running time %v", j.Description, c.Sub(start))
+			case <-dc:
+				return
 			}
-		}()
+		}
 	}
+}
+
+func (j Job) Do(dc chan struct{}) error {
+	go j.Time(dc)
 	return j.Job()
 }
 
 type Worker struct {
-	PrevWorker *Worker
-	StopChan   chan struct{}
 	ErrChan    chan error
+	prevWorker *Worker
+	stopChan   chan struct{}
 	job        Job
 }
 
-func NewWorker(job Job, prevWorker *Worker) *Worker {
-	worker := &Worker{
-		PrevWorker: prevWorker,
-		StopChan:   make(chan struct{}),
+func NewWorker() *Worker {
+	nw := &Worker{
+		stopChan: make(chan struct{}),
+	}
+
+	close(nw.stopChan)
+
+	return nw
+}
+
+func (w *Worker) NextWorker(job Job) *Worker {
+	nw := &Worker{
 		ErrChan:    make(chan error),
+		prevWorker: w,
+		stopChan:   make(chan struct{}),
 		job:        job,
 	}
 
 	go func() {
-		<-worker.PrevWorker.StopChan
 		select {
-		case err := <-worker.PrevWorker.ErrChan:
-			go func() { worker.ErrChan <- err }()
+		case <-nw.stopChan:
+			return
+		case <-nw.prevWorker.stopChan:
+		}
+
+		select {
+		case err := <-nw.prevWorker.ErrChan:
+			go func() { nw.ErrChan <- err }()
 		default:
-			err := worker.job.Do(worker.StopChan)
+			err := nw.job.Do(nw.stopChan)
 			if err != nil {
-				go func() { worker.ErrChan <- err }()
+				go func() { nw.ErrChan <- err }()
 			}
 		}
 
-		close(worker.StopChan)
-		worker.PrevWorker = nil
+		nw.prevWorker = nil
+		close(nw.stopChan)
 	}()
 
-	return worker
+	return nw
+}
+
+func (w *Worker) Kill() {
+	pw := w.prevWorker
+	killed := 0
+	for pw != nil {
+		close(pw.stopChan)
+		killed++
+		pw = pw.prevWorker
+	}
+
+	if killed > 0 {
+		log.Printf("Kill forced %v jobs to stop", killed)
+	}
 }
