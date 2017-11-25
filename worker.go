@@ -12,27 +12,27 @@ type Job struct {
 	HardTimer   bool
 }
 
-func (j Job) Time(dc chan struct{}) {
-	if j.Timeout > 0 {
-		start := time.Now()
-		ticker := time.NewTicker(j.Timeout)
-		defer ticker.Stop()
-		for {
-			select {
-			case c := <-ticker.C:
-				if j.HardTimer {
-					log.Fatalf("Job %v hard timeout", j.Description)
-				}
-				log.Printf("Job %v timeout, running time %v", j.Description, c.Sub(start))
-			case <-dc:
-				return
+func (j Job) time(dc chan struct{}) {
+	start := time.Now()
+	ticker := time.NewTicker(j.Timeout)
+	defer ticker.Stop()
+	for {
+		select {
+		case c := <-ticker.C:
+			if j.HardTimer {
+				log.Fatalf("Job %v hard timeout", j.Description)
 			}
+			log.Printf("Job %v timeout, running time %v", j.Description, c.Sub(start))
+		case <-dc:
+			return
 		}
 	}
 }
 
 func (j Job) Do(dc chan struct{}) error {
-	go j.Time(dc)
+	if j.Timeout > 0 {
+		go j.time(dc)
+	}
 	return j.Job()
 }
 
@@ -40,6 +40,7 @@ type Worker struct {
 	ErrChan    chan error
 	prevWorker *Worker
 	stopChan   chan struct{}
+	killChan   chan struct{}
 	job        Job
 }
 
@@ -58,12 +59,13 @@ func (w *Worker) NextWorker(job Job) *Worker {
 		ErrChan:    make(chan error),
 		prevWorker: w,
 		stopChan:   make(chan struct{}),
+		killChan:   make(chan struct{}),
 		job:        job,
 	}
 
 	go func() {
 		select {
-		case <-nw.stopChan:
+		case <-nw.killChan:
 			return
 		case <-nw.prevWorker.stopChan:
 		}
@@ -87,9 +89,9 @@ func (w *Worker) NextWorker(job Job) *Worker {
 
 func (w *Worker) Kill() {
 	pw := w.prevWorker
-	killed := 0
+	killed := -1
 	for pw != nil {
-		close(pw.stopChan)
+		close(pw.killChan)
 		killed++
 		pw = pw.prevWorker
 	}
