@@ -1,51 +1,76 @@
 package worker
 
 import (
-	"log"
+	"fmt"
 	"time"
 )
 
-type Job struct {
-	Description string
-	Job         func() error
-	Timeout     time.Duration
-	HardTimer   bool
+type Job interface {
+	Do() error
+	Describe() string
 }
 
-func (j Job) time(dc chan struct{}) {
-	start := time.Now()
-	ticker := time.NewTicker(j.Timeout)
-	defer ticker.Stop()
-	for {
-		select {
-		case c := <-ticker.C:
-			if j.HardTimer {
-				log.Fatalf("Job %v hard timeout", j.Description)
-			}
-			log.Printf("Job %v timeout, running time %v", j.Description, c.Sub(start))
-		case <-dc:
-			return
-		}
-	}
+type JobTimeoutErr interface {
+	Id() int
+	Error() string
+	ErrorChan() chan error
+	Detach()
+	passError(err error)
 }
 
-func (j Job) Do(dc chan struct{}) error {
-	if j.Timeout > 0 {
-		go j.time(dc)
-	}
-	return j.Job()
+type jobTimeoutError struct {
+	id        int
+	desc      string
+	errorChan chan error
+}
+
+func (e *jobTimeoutError) Id() int {
+	return e.id
+}
+
+func (e *jobTimeoutError) Error() string {
+	return fmt.Sprintf("Job %v: %v", e.id, e.desc)
+}
+
+func (e *jobTimeoutError) ErrorChan() chan error {
+	return e.errorChan
+}
+
+func (e *jobTimeoutError) Detach() {
+	go func() {
+		<-e.errorChan
+	}()
+}
+
+func (e *jobTimeoutError) passError(err error) {
+	e.errorChan <- err
+}
+
+type WorkerOpts struct {
+	CountChan  chan int
+	Timeout    time.Duration
+	HardErrors bool
 }
 
 type Worker struct {
 	ErrChan    chan error
+	workerId   int
+	opts       WorkerOpts
 	prevWorker *Worker
 	stopChan   chan struct{}
 	killChan   chan struct{}
 	job        Job
 }
 
-func NewWorker() *Worker {
+func NewWorker(opts *WorkerOpts) *Worker {
+	o := WorkerOpts{}
+	if opts != nil {
+		o = *opts
+	}
+
 	nw := &Worker{
+		workerId: 0,
+		opts:     o,
 		stopChan: make(chan struct{}),
 	}
 
@@ -54,40 +79,86 @@ func NewWorker() *Worker {
 	return nw
 }
 
-func (w *Worker) NextWorker(job Job) *Worker {
+func (w *Worker) handle() {
+	defer func() {
+		if w.opts.CountChan != nil {
+			go func() {
+				w.opts.CountChan <- w.workerId
+			}()
+		}
+		w.prevWorker = nil
+		close(w.stopChan)
+	}()
+
+pre:
+	for {
+		select {
+		case err := <-w.prevWorker.ErrChan:
+			go func() { w.ErrChan <- err }()
+			if w.opts.HardErrors {
+				return
+			}
+
+			switch e := err.(type) {
+			case JobTimeoutErr:
+				go func() {
+					err := <-w.prevWorker.ErrChan
+					e.passError(err)
+				}()
+				if e.Id() == w.workerId-1 {
+					break pre
+				}
+			}
+		case <-w.killChan:
+			return
+		case <-w.prevWorker.stopChan:
+			break pre
+		}
+	}
+
+	if w.opts.Timeout > 0 {
+		go w.time()
+	}
+	err := w.job.Do()
+	if err != nil {
+		go func() { w.ErrChan <- err }()
+	}
+}
+
+func (w *Worker) time() {
+	timer := time.NewTimer(w.opts.Timeout)
+	select {
+	case <-timer.C:
+		w.ErrChan <- &jobTimeoutError{
+			id:        w.workerId,
+			desc:      w.job.Describe(),
+			errorChan: make(chan error),
+		}
+	case <-w.stopChan:
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return
+	}
+}
+
+func (w *Worker) NextWorker(job Job) (int, *Worker) {
 	nw := &Worker{
 		ErrChan:    make(chan error),
+		workerId:   w.workerId + 1,
+		opts:       w.opts,
 		prevWorker: w,
 		stopChan:   make(chan struct{}),
 		killChan:   make(chan struct{}),
 		job:        job,
 	}
 
-	go func() {
-		select {
-		case <-nw.killChan:
-			return
-		case <-nw.prevWorker.stopChan:
-		}
+	go nw.handle()
 
-		select {
-		case err := <-nw.prevWorker.ErrChan:
-			go func() { nw.ErrChan <- err }()
-		default:
-			err := nw.job.Do(nw.stopChan)
-			if err != nil {
-				go func() { nw.ErrChan <- err }()
-			}
-		}
-
-		nw.prevWorker = nil
-		close(nw.stopChan)
-	}()
-
-	return nw
+	return nw.workerId, nw
 }
 
-func (w *Worker) Kill() {
+func (w *Worker) Kill() int {
 	pw := w.prevWorker
 	killed := -1
 	for pw != nil {
@@ -97,6 +168,7 @@ func (w *Worker) Kill() {
 	}
 
 	if killed > 0 {
-		log.Printf("Kill forced %v jobs to stop", killed)
+		return killed
 	}
+	return 0
 }
