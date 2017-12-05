@@ -2,12 +2,12 @@ package worker
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 )
 
 type Job interface {
 	Do() error
-	Describe() string
 }
 
 type JobTimeoutErr interface {
@@ -20,7 +20,7 @@ type JobTimeoutErr interface {
 
 type jobTimeoutError struct {
 	id        int
-	desc      string
+	jobType   reflect.Type
 	errorChan chan error
 }
 
@@ -29,7 +29,7 @@ func (e *jobTimeoutError) Id() int {
 }
 
 func (e *jobTimeoutError) Error() string {
-	return fmt.Sprintf("Job %v: %v", e.id, e.desc)
+	return fmt.Sprintf("Job %v: %v", e.id, e.jobType)
 }
 
 func (e *jobTimeoutError) ErrorChan() chan error {
@@ -131,7 +131,7 @@ func (w *Worker) time() {
 	case <-timer.C:
 		w.ErrChan <- &jobTimeoutError{
 			id:        w.workerId,
-			desc:      w.job.Describe(),
+			jobType:   reflect.TypeOf(w.job),
 			errorChan: make(chan error),
 		}
 	case <-w.stopChan:
