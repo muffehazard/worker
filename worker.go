@@ -94,6 +94,10 @@ pre:
 	for {
 		select {
 		case err := <-w.prevWorker.ErrChan:
+			if err == nil {
+				continue
+			}
+
 			go func() { w.ErrChan <- err }()
 			if w.opts.HardErrors {
 				return
@@ -118,9 +122,7 @@ pre:
 		go w.time()
 	}
 	err := w.job.Do()
-	if err != nil {
-		go func() { w.ErrChan <- err }()
-	}
+	go func() { w.ErrChan <- err }()
 }
 
 func (w *Worker) time() {
