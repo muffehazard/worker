@@ -94,7 +94,7 @@ pre:
 	for {
 		select {
 		case err := <-w.prevWorker.ErrChan:
-			go func() { w.ErrChan <- err }()
+			w.ErrChan <- err
 			if err == nil {
 				continue
 			}
@@ -140,12 +140,6 @@ func (w *Worker) time() {
 				go func() { toErr.errorChan <- err }()
 			case <-w.stopChan:
 				go func() { toErr.errorChan <- nil }()
-			}
-
-			select {
-			case <-w.killChan:
-				toErr.Detach()
-			default:
 			}
 		}()
 	case <-w.stopChan:
