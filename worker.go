@@ -53,13 +53,14 @@ type WorkerOpts struct {
 }
 
 type Worker struct {
-	ErrChan    chan error
-	workerId   int
-	opts       WorkerOpts
-	prevWorker *Worker
-	stopChan   chan struct{}
-	killChan   chan struct{}
-	job        Job
+	ErrChan     chan error
+	workerId    int
+	opts        WorkerOpts
+	prevWorker  *Worker
+	stopChan    chan struct{}
+	timeoutChan chan struct{}
+	killChan    chan struct{}
+	job         Job
 }
 
 func NewWorker(opts *WorkerOpts) *Worker {
@@ -102,12 +103,10 @@ pre:
 			if w.opts.HardErrors {
 				return
 			}
-
-			if toErr, ok := err.(JobTimeoutErr); ok && toErr.Id() == w.workerId-1 {
-				break pre
-			}
 		case <-w.killChan:
 			return
+		case <-w.prevWorker.timeoutChan:
+			break pre
 		case <-w.prevWorker.stopChan:
 			break pre
 		}
@@ -134,6 +133,7 @@ func (w *Worker) time() {
 			errorChan: make(chan error),
 		}
 		w.ErrChan <- toErr
+		close(w.timeoutChan)
 		go func() {
 			select {
 			case err := <-w.ErrChan:
@@ -152,13 +152,14 @@ func (w *Worker) time() {
 
 func (w *Worker) NextWorker(job Job) (int, *Worker) {
 	nw := &Worker{
-		ErrChan:    make(chan error),
-		workerId:   w.workerId + 1,
-		opts:       w.opts,
-		prevWorker: w,
-		stopChan:   make(chan struct{}),
-		killChan:   make(chan struct{}),
-		job:        job,
+		ErrChan:     make(chan error),
+		workerId:    w.workerId + 1,
+		opts:        w.opts,
+		prevWorker:  w,
+		stopChan:    make(chan struct{}),
+		timeoutChan: make(chan struct{}),
+		killChan:    make(chan struct{}),
+		job:         job,
 	}
 
 	go nw.handle()
