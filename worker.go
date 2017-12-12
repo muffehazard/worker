@@ -117,7 +117,11 @@ pre:
 		go w.time()
 	}
 
-	w.ErrChan <- w.job.Do()
+	select {
+	case w.ErrChan <- w.job.Do():
+	case <-w.killChan:
+		go func() { <-w.ErrChan }()
+	}
 }
 
 func (w *Worker) time() {
@@ -133,9 +137,15 @@ func (w *Worker) time() {
 		go func() {
 			select {
 			case err := <-w.ErrChan:
-				toErr.errorChan <- err
+				go func() { toErr.errorChan <- err }()
 			case <-w.stopChan:
-				toErr.errorChan <- nil
+				go func() { toErr.errorChan <- nil }()
+			}
+
+			select {
+			case <-w.killChan:
+				toErr.Detach()
+			default:
 			}
 		}()
 	case <-w.stopChan:
@@ -163,16 +173,13 @@ func (w *Worker) NextWorker(job Job) (int, *Worker) {
 }
 
 func (w *Worker) Kill() int {
-	pw := w.prevWorker
-	killed := -1
+	pw := w
+	killed := 0
 	for pw != nil {
 		close(pw.killChan)
 		killed++
 		pw = pw.prevWorker
 	}
 
-	if killed > 0 {
-		return killed
-	}
-	return 0
+	return killed
 }
