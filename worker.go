@@ -99,13 +99,11 @@ pre:
 				return
 			}
 
-			switch e := err.(type) {
-			case JobTimeoutErr:
+			if toErr, ok := err.(JobTimeoutErr); ok {
 				go func() {
-					err := <-w.prevWorker.ErrChan
-					e.passError(err)
+					toErr.passError(<-w.prevWorker.ErrChan)
 				}()
-				if e.Id() == w.workerId-1 {
+				if toErr.Id() == w.workerId-1 {
 					break pre
 				}
 			}
