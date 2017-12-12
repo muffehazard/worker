@@ -116,8 +116,8 @@ pre:
 	if w.opts.Timeout > 0 {
 		go w.time()
 	}
-	err := w.job.Do()
-	go func() { w.ErrChan <- err }()
+
+	w.ErrChan <- w.job.Do()
 }
 
 func (w *Worker) time() {
