@@ -94,22 +94,17 @@ pre:
 	for {
 		select {
 		case err := <-w.prevWorker.ErrChan:
+			go func() { w.ErrChan <- err }()
 			if err == nil {
 				continue
 			}
 
-			go func() { w.ErrChan <- err }()
 			if w.opts.HardErrors {
 				return
 			}
 
-			if toErr, ok := err.(JobTimeoutErr); ok {
-				go func() {
-					toErr.passError(<-w.prevWorker.ErrChan)
-				}()
-				if toErr.Id() == w.workerId-1 {
-					break pre
-				}
+			if toErr, ok := err.(JobTimeoutErr); ok && toErr.Id() == w.workerId-1 {
+				break pre
 			}
 		case <-w.killChan:
 			return
@@ -129,11 +124,20 @@ func (w *Worker) time() {
 	timer := time.NewTimer(w.opts.Timeout)
 	select {
 	case <-timer.C:
-		w.ErrChan <- &jobTimeoutError{
+		toErr := &jobTimeoutError{
 			id:        w.workerId,
 			jobType:   reflect.TypeOf(w.job),
 			errorChan: make(chan error),
 		}
+		w.ErrChan <- toErr
+		go func() {
+			select {
+			case err := <-w.ErrChan:
+				toErr.errorChan <- err
+			case <-w.stopChan:
+				toErr.errorChan <- nil
+			}
+		}()
 	case <-w.stopChan:
 		if !timer.Stop() {
 			<-timer.C
