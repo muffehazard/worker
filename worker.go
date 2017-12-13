@@ -96,7 +96,7 @@ func (w *Worker) logMsg(level int, msg string, v ...interface{}) {
 }
 
 func (w *Worker) handle() {
-	w.logMsg(Info, "Worker %v handling", w.workerId)
+	w.logMsg(Info, "Handling", w.workerId)
 	defer func() {
 		if w.opts.CountChan != nil {
 			go func() {
@@ -105,6 +105,7 @@ func (w *Worker) handle() {
 		}
 		w.prevWorker = nil
 		close(w.stopChan)
+		w.logMsg(Info, "Handling done")
 	}()
 
 pre:
