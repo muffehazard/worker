@@ -96,7 +96,7 @@ func (w *Worker) logMsg(level int, msg string, v ...interface{}) {
 }
 
 func (w *Worker) handle() {
-	w.logMsg(Info, "Handling", w.workerId)
+	w.logMsg(Info, "Handling")
 	defer func() {
 		if w.opts.CountChan != nil {
 			go func() {
