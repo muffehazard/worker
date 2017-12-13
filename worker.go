@@ -90,7 +90,7 @@ func NewWorker(opts *WorkerOpts) *Worker {
 }
 
 func (w *Worker) logMsg(level int, msg string, v ...interface{}) {
-	if w.opts.PrintLevel <= level {
+	if w.opts.PrintLevel >= level {
 		log.Printf(fmt.Sprintf("[%v] ", w.workerId)+msg, v...)
 	}
 }
