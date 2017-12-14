@@ -117,6 +117,7 @@ func (w *Worker) time() {
 	timer := time.NewTimer(w.opts.Timeout)
 	select {
 	case <-timer.C:
+		w.logMsg(Err, "Timeout")
 		w.sendError(TimeoutError)
 		close(w.timeoutChan)
 	case <-w.stopChan:
