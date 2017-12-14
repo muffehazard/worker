@@ -61,7 +61,9 @@ func (w *Worker) logMsg(level int, msg string, v ...interface{}) {
 }
 
 func (w *Worker) sendError(err error) {
-	w.logMsg(Err, "Error: %v", err)
+	if err != nil {
+		w.logMsg(Err, "Error: %v", err)
+	}
 	if w.opts.ErrChan != nil {
 		select {
 		case w.opts.ErrChan <- err:
