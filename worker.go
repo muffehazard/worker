@@ -1,67 +1,34 @@
 package worker
 
 import (
+	"errors"
 	"fmt"
 	"log"
-	"reflect"
 	"time"
 )
+
+var TimeoutError = errors.New("Timeout")
 
 type Job interface {
 	Do() error
 }
 
-type JobTimeoutErr interface {
-	Id() int
-	Error() string
-	ErrorChan() chan error
-	Detach()
-	passError(err error)
-}
-
-type jobTimeoutError struct {
-	id        int
-	jobType   reflect.Type
-	errorChan chan error
-}
-
-func (e *jobTimeoutError) Id() int {
-	return e.id
-}
-
-func (e *jobTimeoutError) Error() string {
-	return fmt.Sprintf("Job %v: %v", e.id, e.jobType)
-}
-
-func (e *jobTimeoutError) ErrorChan() chan error {
-	return e.errorChan
-}
-
-func (e *jobTimeoutError) Detach() {
-	go func() {
-		<-e.errorChan
-	}()
-}
-
-func (e *jobTimeoutError) passError(err error) {
-	e.errorChan <- err
-}
-
 const (
-	_     = 0
+	None  = -1
+	Err   = 0
 	Info  = 1
 	Debug = 2
 )
 
 type WorkerOpts struct {
 	CountChan  chan int
+	ErrChan    chan error
 	Timeout    time.Duration
 	HardErrors bool
 	PrintLevel int
 }
 
 type Worker struct {
-	ErrChan     chan error
 	workerId    int
 	opts        WorkerOpts
 	prevWorker  *Worker
@@ -81,6 +48,7 @@ func NewWorker(opts *WorkerOpts) *Worker {
 		workerId: 0,
 		opts:     o,
 		stopChan: make(chan struct{}),
+		killChan: make(chan struct{}),
 	}
 	nw.logMsg(Debug, "New worker, opts: %+v", nw.opts)
 
@@ -95,36 +63,34 @@ func (w *Worker) logMsg(level int, msg string, v ...interface{}) {
 	}
 }
 
+func (w *Worker) sendError(err error) {
+	w.logMsg(Err, "Error: %v", err)
+	if w.opts.ErrChan != nil {
+		select {
+		case w.opts.ErrChan <- err:
+		case <-w.killChan:
+		}
+	}
+}
+
 func (w *Worker) handle() {
 	w.logMsg(Info, "Handling")
 	defer func() {
+		w.prevWorker = nil
 		if w.opts.CountChan != nil {
 			go func() {
 				w.opts.CountChan <- w.workerId
 			}()
 		}
-		w.prevWorker = nil
-		close(w.stopChan)
 		w.logMsg(Info, "Handling done")
 	}()
 
 pre:
 	for {
 		select {
-		case err := <-w.prevWorker.ErrChan:
-			w.logMsg(Debug, "Received error: %v", err)
-			w.ErrChan <- err
-			if err == nil {
-				continue
-			}
-			w.logMsg(Debug, "Non-nil error received")
-
-			if w.opts.HardErrors {
-				w.logMsg(Debug, "Hard errors, exiting")
-				return
-			}
 		case <-w.killChan:
 			w.logMsg(Debug, "Killed")
+			close(w.prevWorker.killChan)
 			return
 		case <-w.prevWorker.timeoutChan:
 			w.logMsg(Debug, "Previous job timed out")
@@ -135,13 +101,15 @@ pre:
 		}
 	}
 
+	w.prevWorker = nil
 	if w.opts.Timeout > 0 {
 		go w.time()
 	}
 
 	w.logMsg(Info, "Starting job")
-	w.ErrChan <- w.job.Do()
+	w.sendError(w.job.Do())
 	w.logMsg(Info, "Done job")
+	close(w.stopChan)
 }
 
 func (w *Worker) time() {
@@ -149,24 +117,16 @@ func (w *Worker) time() {
 	timer := time.NewTimer(w.opts.Timeout)
 	select {
 	case <-timer.C:
-		w.logMsg(Info, "Timeout")
-		toErr := &jobTimeoutError{
-			id:        w.workerId,
-			jobType:   reflect.TypeOf(w.job),
-			errorChan: make(chan error),
-		}
-		w.ErrChan <- toErr
+		w.sendError(TimeoutError)
 		close(w.timeoutChan)
-		go func() {
-			select {
-			case err := <-w.ErrChan:
-				go func() { toErr.errorChan <- err }()
-			case <-w.stopChan:
-				go func() { toErr.errorChan <- nil }()
-			}
-		}()
 	case <-w.stopChan:
 		w.logMsg(Info, "Job completed before timeout")
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return
+	case <-w.killChan:
+		w.logMsg(Info, "Job killed before timeout")
 		if !timer.Stop() {
 			<-timer.C
 		}
@@ -176,7 +136,6 @@ func (w *Worker) time() {
 
 func (w *Worker) NextWorker(job Job) (int, *Worker) {
 	nw := &Worker{
-		ErrChan:     make(chan error),
 		workerId:    w.workerId + 1,
 		opts:        w.opts,
 		prevWorker:  w,
@@ -191,14 +150,6 @@ func (w *Worker) NextWorker(job Job) (int, *Worker) {
 	return nw.workerId, nw
 }
 
-func (w *Worker) Kill() int {
-	pw := w
-	killed := 0
-	for pw != nil {
-		close(pw.killChan)
-		killed++
-		pw = pw.prevWorker
-	}
-
-	return killed
+func (w *Worker) Kill() {
+	close(w.killChan)
 }
