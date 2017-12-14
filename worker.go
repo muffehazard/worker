@@ -3,6 +3,7 @@ package worker
 import (
 	"fmt"
 	"log"
+	"reflect"
 	"time"
 )
 
@@ -116,7 +117,7 @@ func (w *Worker) time() {
 	timer := time.NewTimer(w.opts.Timeout)
 	select {
 	case <-timer.C:
-		w.logMsg(Err, "Timeout")
+		w.logMsg(Err, "Timeout: %v", reflect.TypeOf(w.job))
 		close(w.timeoutChan)
 	case <-w.stopChan:
 		w.logMsg(Info, "Job completed before timeout")
