@@ -1,13 +1,10 @@
 package worker
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"time"
 )
-
-var TimeoutError = errors.New("Timeout")
 
 type Job interface {
 	Do() error
@@ -118,7 +115,6 @@ func (w *Worker) time() {
 	select {
 	case <-timer.C:
 		w.logMsg(Err, "Timeout")
-		w.sendError(TimeoutError)
 		close(w.timeoutChan)
 	case <-w.stopChan:
 		w.logMsg(Info, "Job completed before timeout")
